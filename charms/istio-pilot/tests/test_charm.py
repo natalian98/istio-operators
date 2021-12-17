@@ -165,6 +165,105 @@ def test_with_ingress_relation(harness, subprocess):
     assert isinstance(harness.charm.model.unit.status, ActiveStatus)
 
 
+def test_with_multiple_ingress_relations(harness, subprocess):
+    run = subprocess.run
+    check_call = subprocess.check_call
+
+    harness.set_leader(True)
+    harness.add_oci_resource(
+        "noop",
+        {
+            "registrypath": "",
+            "username": "",
+            "password": "",
+        },
+    )
+
+    related_apps = ["app0", "app1"]
+    for app in related_apps:
+        rel_id = harness.add_relation("ingress", app)
+
+        harness.add_relation_unit(rel_id, f"{app}/0")
+        data = {"service": f"{app}-service-name", "port": 6666, "prefix": f"/{app}"}
+        harness.update_relation_data(
+            rel_id,
+            app,
+            {"_supported_versions": "- v1", "data": yaml.dump(data)},
+        )
+
+    run.return_value.stdout = b"{'items': []}"
+    harness.begin_with_initial_hooks()
+
+    assert run.call_count == 6
+    run.reset_mock()
+    run.return_value.stdout = yaml.safe_dump(
+        {"items": [{"status": {"loadBalancer": {"ingress": [{"ip": "127.0.0.1"}]}}}]}
+    ).encode("utf-8")
+    harness.framework.reemit()
+
+    expected = [
+        {
+            'apiVersion': 'networking.istio.io/v1alpha3',
+            'kind': 'VirtualService',
+            'metadata': {'name': f'{app}-service-name'},
+            'spec': {
+                'gateways': ['None/istio-gateway'],
+                'hosts': ['*'],
+                'http': [
+                    {
+                        'name': 'app-route',
+                        'match': [{'uri': {'prefix': f'/{app}'}}],
+                        'rewrite': {'uri': f'/{app}'},
+                        'route': [
+                            {
+                                'destination': {
+                                    'host': f'{app}-service-name.None.svc.cluster.local',
+                                    'port': {'number': 6666},
+                                }
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+        for app in related_apps
+    ]
+
+    assert check_call.call_args_list == [
+        Call(
+            [
+                './istioctl',
+                'install',
+                '-y',
+                '-s',
+                'profile=minimal',
+                '-s',
+                'values.global.istioNamespace=None',
+            ]
+        )
+    ]
+
+    assert len(run.call_args_list) == 12
+
+    for call in run.call_args_list[1::3]:
+        args = [
+            './kubectl',
+            '-n',
+            None,
+            'delete',
+            'virtualservices,destinationrules',
+            '-lapp.juju.is/created-by=istio-pilot',
+        ]
+        assert call.args == (args,)
+
+    for call in run.call_args_list[2::3]:
+        expected_input = list(yaml.safe_load_all(call.kwargs['input']))
+        assert call.args == (['./kubectl', '-n', None, 'apply', '-f-'],)
+        assert expected_input == expected
+
+    assert isinstance(harness.charm.model.unit.status, ActiveStatus)
+
+
 def test_with_ingress_relation_v3(harness, subprocess):
     run = subprocess.run
 
@@ -319,45 +418,51 @@ def test_with_ingress_auth_relation(harness, subprocess):
 
     expected = [
         {
-            'apiVersion': 'rbac.istio.io/v1alpha1',
-            'kind': 'RbacConfig',
-            'metadata': {'name': 'default'},
-            'spec': {'mode': 'OFF'},
-        },
-        {
             'apiVersion': 'networking.istio.io/v1alpha3',
             'kind': 'EnvoyFilter',
             'metadata': {'name': 'authn-filter'},
-            'spec': {
-                'filters': [
+            "spec": {
+                "configPatches": [
                     {
-                        'filterConfig': {
-                            'httpService': {
-                                'authorizationRequest': {
-                                    'allowedHeaders': {'patterns': [{'exact': 'foo'}]}
-                                },
-                                'authorizationResponse': {
-                                    'allowedUpstreamHeaders': {'patterns': [{'exact': 'bar'}]}
-                                },
-                                'serverUri': {
-                                    'cluster': 'outbound|6666||service-name.None.svc.cluster.local',
-                                    'failureModeAllow': False,
-                                    'timeout': '10s',
-                                    'uri': 'http://service-name.None.svc.cluster.local:6666',
-                                },
-                            }
+                        "applyTo": "HTTP_FILTER",
+                        "match": {
+                            "context": "GATEWAY",
+                            "listener": {
+                                "filterChain": {
+                                    "filter": {
+                                        "name": "envoy.filters.network.http_connection_manager"
+                                    }
+                                }
+                            },
                         },
-                        'filterName': 'envoy.ext_authz',
-                        'filterType': 'HTTP',
-                        'insertPosition': {'index': 'FIRST'},
-                        'listenerMatch': {'listenerType': 'GATEWAY'},
+                        "patch": {
+                            "operation": "INSERT_BEFORE",
+                            "value": {
+                                "name": "envoy.filters.http.ext_authz",
+                                "typed_config": {
+                                    "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz",
+                                    "http_service": {
+                                        'server_uri': {
+                                            'uri': 'http://service-name.None.svc.cluster.local:6666',
+                                            'cluster': 'outbound|6666||service-name.None.svc.cluster.local',
+                                            'timeout': '10s',
+                                        },
+                                        "authorization_request": {
+                                            "allowed_headers": {'patterns': [{'exact': 'foo'}]}
+                                        },
+                                        "authorization_response": {
+                                            "allowed_upstream_headers": {'patterns': [{'exact': 'bar'}]}
+                                        },
+                                    },
+                                },
+                            },
+                        },
                     }
                 ],
-                'workloadLabels': {'istio': 'ingressgateway'},
+                "workloadSelector": {"labels": {"istio": "ingressgateway"}},
             },
         },
     ]
-
     assert check_call.call_args_list == [
         Call(
             [
@@ -380,7 +485,7 @@ def test_with_ingress_auth_relation(harness, subprocess):
             '-n',
             None,
             'delete',
-            'envoyfilters,rbacconfigs',
+            'envoyfilters',
             '-lapp.juju.is/created-by=istio-pilot',
         ]
         assert call.args == (args,)

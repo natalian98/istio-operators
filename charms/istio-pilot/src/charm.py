@@ -84,7 +84,7 @@ class Operator(CharmBase):
         try:
             self._kubectl(
                 "delete",
-                "virtualservices,destinationrule,gateways,envoyfilters,rbacconfigs",
+                "virtualservices,destinationrule,gateways,envoyfilters",
                 f"-lapp.juju.is/created-by={self.app.name}",
                 capture_output=True,
             )
@@ -174,11 +174,14 @@ class Operator(CharmBase):
 
             return kwargs
 
-        virtual_services = ''.join(
-            t.render(**get_kwargs(rel, ingress.versions[app.name], route))
+        virtual_services = '\n---'.join(
+            t.render(**get_kwargs(rel, ingress.versions[app.name], route)).strip().strip("---")
             for ((rel, app), route) in routes.items()
         )
 
+        # TODO: Bug: This deletes virtualservices that are created by istiod itself.
+        #  we need a more nuanced way (maybe add additional label in the template so we can
+        #  filter better?)
         self._kubectl(
             'delete',
             'virtualservices,destinationrules',
@@ -211,15 +214,16 @@ class Operator(CharmBase):
         else:
             auth_routes = []
 
+        # TODO: Does this break all auth_routes if a single auth_route is broken?
         if not all(ar.get("service") for ar in auth_routes):
             self.model.unit.status = WaitingStatus("Waiting for auth route connection information.")
             return
 
-        rbac_configs = Path('src/rbac_config.yaml').read_text() if auth_routes else None
-
         t = self.env.get_template('auth_filter.yaml.j2')
         auth_filters = ''.join(
             t.render(
+                # TODO: Bug?  I think this should be the namespace of whatever made the relation,
+                #       not of the istio charm itself (cross-model relations will break this)
                 namespace=self.model.name,
                 **{
                     'request_headers': yaml.safe_dump(
@@ -237,11 +241,12 @@ class Operator(CharmBase):
             for r in auth_routes
         )
 
-        manifests = [rbac_configs, auth_filters]
+        manifests = [auth_filters]
         manifests = '\n'.join([m for m in manifests if m])
+        # TODO: This may have the same problem as the virutalservices above.  Apply the same fix
         self._kubectl(
             'delete',
-            'envoyfilters,rbacconfigs',
+            'envoyfilters',
             f'-lapp.juju.is/created-by={self.app.name}',
         )
 
