@@ -3,6 +3,8 @@ apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
   name: authn-filter
+  labels:
+    app.istio-pilot.io/is-workload-entity: "true"
 spec:
   configPatches:
     - applyTo: HTTP_FILTER

@@ -3,6 +3,8 @@ apiVersion: networking.istio.io/v1alpha3
 kind: VirtualService
 metadata:
   name: {{ service }}
+  labels:
+    app.istio-pilot.io/is-workload-entity: "true"
 spec:
   gateways:
   - '{{ namespace }}/{{ gateway }}'
@@ -40,6 +42,8 @@ apiVersion: networking.istio.io/v1alpha3
 kind: DestinationRule
 metadata:
   name: {{ service }}
+  labels:
+    app.istio-pilot.io/is-workload-entity: "true"
 spec:
   host: '{{ service }}.{{ namespace }}.svc.cluster.local'
   subsets:

@@ -85,7 +85,7 @@ class Operator(CharmBase):
             self._kubectl(
                 "delete",
                 "virtualservices,destinationrule,gateways,envoyfilters",
-                f"-lapp.juju.is/created-by={self.app.name}",
+                f"-lapp.juju.is/created-by={self.app.name},app.istio-pilot.io/is-workload-entity=true",
                 capture_output=True,
             )
             self._kubectl(
@@ -110,7 +110,7 @@ class Operator(CharmBase):
         self._kubectl(
             'delete',
             'gateways',
-            f'-lapp.juju.is/created-by={self.app.name}',
+            f"-lapp.juju.is/created-by={self.app.name},app.istio-pilot.io/is-workload-entity=true",
         )
         self._kubectl("apply", "-f-", input=manifest)
 
@@ -179,13 +179,10 @@ class Operator(CharmBase):
             for ((rel, app), route) in routes.items()
         )
 
-        # TODO: Bug: This deletes virtualservices that are created by istiod itself.
-        #  we need a more nuanced way (maybe add additional label in the template so we can
-        #  filter better?)
         self._kubectl(
             'delete',
             'virtualservices,destinationrules',
-            f'-lapp.juju.is/created-by={self.app.name}',
+            f"-lapp.juju.is/created-by={self.app.name},app.istio-pilot.io/is-workload-entity=true",
         )
         if routes:
             self._kubectl("apply", "-f-", input=virtual_services)
@@ -222,8 +219,6 @@ class Operator(CharmBase):
         t = self.env.get_template('auth_filter.yaml.j2')
         auth_filters = ''.join(
             t.render(
-                # TODO: Bug?  I think this should be the namespace of whatever made the relation,
-                #       not of the istio charm itself (cross-model relations will break this)
                 namespace=self.model.name,
                 **{
                     'request_headers': yaml.safe_dump(
@@ -243,11 +238,10 @@ class Operator(CharmBase):
 
         manifests = [auth_filters]
         manifests = '\n'.join([m for m in manifests if m])
-        # TODO: This may have the same problem as the virutalservices above.  Apply the same fix
         self._kubectl(
             'delete',
             'envoyfilters',
-            f'-lapp.juju.is/created-by={self.app.name}',
+            f"-lapp.juju.is/created-by={self.app.name},app.istio-pilot.io/is-workload-entity=true",
         )
 
         self._kubectl("apply", "-f-", input=manifests)
