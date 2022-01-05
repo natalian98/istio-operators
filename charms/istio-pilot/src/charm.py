@@ -211,6 +211,10 @@ class Operator(CharmBase):
         else:
             auth_routes = []
 
+        if not auth_routes:
+            self.log.info("Skipping auth route creation due to empty list")
+            return
+
         # TODO: Does this break all auth_routes if a single auth_route is broken?
         if not all(ar.get("service") for ar in auth_routes):
             self.model.unit.status = WaitingStatus("Waiting for auth route connection information.")
